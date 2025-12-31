@@ -19,7 +19,7 @@ LIMIT = 20
 
 # Binance API configuration
 BINANCE_BASE_URL = os.getenv("BINANCE_BASE_URL", "https://api.binance.com/api/v3")
-BINANCE_KLINES_URL = f"{BINANCE_BASE_URL}/klines"
+BINANCE_KLINES_URL = "https://api.binance.com/api/v3/klines"
 
 # API server configuration
 API_HOST = os.getenv("API_HOST", "127.0.0.1")

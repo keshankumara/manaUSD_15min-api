@@ -22,11 +22,12 @@ REQUEST_TIMEOUT = 10
 
 def fetch_candles() -> List[Dict[str, Any]]:
     """
-    Fetch the latest 15-minute candles from Binance API.
+    Fetch the latest 15-minute candles from Binance API with live data.
+    Data is converted to Sri Lanka timezone (UTC+5:30).
     
     Returns:
         List of dictionaries containing candle data with columns:
-        - Open time: Timestamp of candle open
+        - Open time: Timestamp of candle open (Sri Lanka time)
         - Open: Opening price
         - High: Highest price
         - Low: Lowest price  
@@ -39,19 +40,27 @@ def fetch_candles() -> List[Dict[str, Any]]:
         Exception: For other processing errors
     """
     try:
-        logger.info(f"Fetching {LIMIT} candles for {SYMBOL} with {INTERVAL} interval")
+        logger.info(f"Fetching LIVE {LIMIT} candles for {SYMBOL} with {INTERVAL} interval")
         
-        # Prepare request parameters
+        # Prepare request parameters - force fresh data
         params = {
             "symbol": SYMBOL,
             "interval": INTERVAL,
             "limit": LIMIT
         }
         
-        # Make API request
+        # Add cache-busting headers to ensure fresh data
+        headers = {
+            'Cache-Control': 'no-cache, no-store, must-revalidate',
+            'Pragma': 'no-cache',
+            'Expires': '0'
+        }
+        
+        # Make API request with cache-busting
         response = requests.get(
             BINANCE_KLINES_URL,
             params=params,
+            headers=headers,
             timeout=REQUEST_TIMEOUT
         )
         
@@ -123,8 +132,11 @@ def process_candle_data(raw_data: List[List]) -> List[Dict[str, Any]]:
         if df[numeric_columns].isna().any().any():
             raise ValueError("Invalid numeric data found in candle data")
         
-        # Convert timestamp from milliseconds to datetime
+        # Convert timestamp from milliseconds to datetime (UTC)
         df["Open time"] = pd.to_datetime(df["Open time"], unit="ms")
+        
+        # Convert to Sri Lanka timezone (UTC+5:30)
+        df["Open time"] = df["Open time"] + pd.Timedelta(hours=5, minutes=30)
         
         # Convert to list of dictionaries
         result = df.to_dict(orient="records")
@@ -132,7 +144,7 @@ def process_candle_data(raw_data: List[List]) -> List[Dict[str, Any]]:
         # Format the datetime as ISO string for JSON serialization
         for record in result:
             if isinstance(record["Open time"], pd.Timestamp):
-                record["Open time"] = record["Open time"].isoformat()
+                record["Open time"] = record["Open time"].strftime("%Y-%m-%d %H:%M:%S") + " LKT"
         
         return result
         
@@ -174,3 +186,64 @@ def validate_interval(interval: str) -> bool:
     ]
     
     return interval in valid_intervals
+
+
+def detect_trend(candles: List[Dict[str, Any]], periods: int = 5) -> Dict[str, Any]:
+    """
+    Detect price trend from candle data.
+    
+    Args:
+        candles: List of candle dictionaries
+        periods: Number of periods to analyze for trend
+        
+    Returns:
+        Dictionary with trend analysis
+    """
+    try:
+        if len(candles) < periods:
+            return {"trend": "INSUFFICIENT_DATA", "confidence": 0, "message": "Not enough data for trend analysis"}
+        
+        # Get recent closing prices
+        recent_closes = [float(candle["Close"]) for candle in candles[-periods:]]
+        
+        # Calculate trend using linear regression-like approach
+        if len(recent_closes) < 2:
+            return {"trend": "SIDEWAYS", "confidence": 0, "message": "Insufficient data"}
+        
+        # Simple trend calculation
+        first_close = recent_closes[0]
+        last_close = recent_closes[-1]
+        price_change = last_close - first_close
+        price_change_percent = (price_change / first_close) * 100
+        
+        # Calculate volatility (standard deviation)
+        avg_price = sum(recent_closes) / len(recent_closes)
+        variance = sum([(price - avg_price) ** 2 for price in recent_closes]) / len(recent_closes)
+        volatility = variance ** 0.5
+        
+        # Determine trend based on price change and volatility
+        threshold = volatility * 0.5  # Dynamic threshold based on volatility
+        
+        if price_change > threshold:
+            trend = "UP"
+            confidence = min(95, abs(price_change_percent) * 10)
+        elif price_change < -threshold:
+            trend = "DOWN" 
+            confidence = min(95, abs(price_change_percent) * 10)
+        else:
+            trend = "SIDEWAYS"
+            confidence = max(30, 70 - (volatility / avg_price * 1000))
+        
+        return {
+            "trend": trend,
+            "confidence": round(confidence, 2),
+            "price_change": round(price_change, 6),
+            "price_change_percent": round(price_change_percent, 4),
+            "volatility": round(volatility, 6),
+            "current_price": last_close,
+            "analysis_periods": periods
+        }
+        
+    except Exception as e:
+        logger.error(f"Error in trend detection: {str(e)}")
+        return {"trend": "ERROR", "confidence": 0, "message": f"Analysis failed: {str(e)}"}
