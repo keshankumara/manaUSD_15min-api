@@ -1,0 +1,5 @@
+fastapi
+uvicorn
+requests
+pandas
+python-dotenv   # optional, for API keys if needed
